@@ -61,6 +61,7 @@ _LOGGER = logging.getLogger(__name__)
 _CLOUD_POLL_INTERVAL = timedelta(seconds=30)
 _MAX_BACKOFF_INTERVAL = timedelta(minutes=5)
 _FAILURE_THRESHOLD = 5  # Raise UpdateFailed after this many consecutive failures
+_MQTT_SILENCE_TIMEOUT = 300  # Seconds of no inbound MQTT before warning
 
 
 def _px_dist(a: tuple[int, int], b: tuple[int, int]) -> float:
@@ -157,6 +158,12 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._render_task: asyncio.Task | None = None
         self._last_notified_error_code: int = 0
         self._last_map_save: float = 0.0
+        # An MQTT coordinator has update_interval=None: it never polls, so
+        # last_update_success stays True whether or not the broker is sending
+        # anything. Track inbound traffic so total silence is reported rather
+        # than looking like a healthy idle device.
+        self._last_message_time: float | None = None
+        self._silence_check_cancel: CALLBACK_TYPE | None = None
 
         if dps := device_info.get("dps"):
             self.data, _ = self._parse_dps(dps)
@@ -288,6 +295,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             self.client.set_on_biz_message(self._handle_biz_message)
             await self.client.connect()
             await self.async_load_storage()
+            self._schedule_silence_check()
 
         except Exception as e:
             _LOGGER.error(
@@ -304,9 +312,38 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         )
         await self.async_load_storage()
 
+    def _schedule_silence_check(self) -> None:
+        """Warn if the broker sends nothing after a successful connect.
+
+        Subscribing to a topic no one publishes to succeeds, so a device that
+        is not actually on Anker's broker looks identical to a healthy one:
+        entities are created from the initial snapshot and then never change,
+        with no error anywhere. Surface that instead of leaving it silent.
+        """
+
+        @callback
+        def _check(_now) -> None:
+            self._silence_check_cancel = None
+            if self._last_message_time is not None:
+                return
+            _LOGGER.warning(
+                "%s (%s) connected to MQTT but received no messages in %ds. "
+                "Entities will not update. The device may not be registered on "
+                "Anker's MQTT broker — check whether it is reachable over the "
+                "Tuya transport instead.",
+                self.device_name,
+                self.device_model,
+                _MQTT_SILENCE_TIMEOUT,
+            )
+
+        self._silence_check_cancel = async_call_later(
+            self.hass, _MQTT_SILENCE_TIMEOUT, _check
+        )
+
     @callback
     def _handle_mqtt_message(self, payload: bytes) -> None:
         """Handle incoming MQTT message bytes."""
+        self._last_message_time = time.monotonic()
         try:
             # Parse MQTT wrapper and extract DPS data
             parsed = json.loads(payload.decode("utf-8", errors="replace"))
@@ -734,6 +771,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         if self._segment_update_cancel:
             self._segment_update_cancel()
             self._segment_update_cancel = None
+        if self._silence_check_cancel:
+            self._silence_check_cancel()
+            self._silence_check_cancel = None
         self._clear_error_notification()
 
     @callback
