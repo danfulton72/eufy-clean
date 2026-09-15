@@ -223,8 +223,23 @@ class EufyHTTPClient:
                 data = await response.json()
                 devices = data.get("data", {}).get("devices")
                 if not devices:
+                    # An empty AIOT list is load-bearing: it routes devices onto
+                    # the Tuya transport and disables the biz/ map stream. Say
+                    # whether the account really has no MQTT devices or the API
+                    # answered with an error code, so the two aren't confused.
+                    _LOGGER.info(
+                        "AIOT device list returned no devices (res_code=%s, msg=%s)",
+                        data.get("res_code"),
+                        data.get("message"),
+                    )
                     return []
                 return [d["device"] for d in devices if "device" in d]
+            _LOGGER.warning(
+                "AIOT device list request failed with HTTP %s; treating the "
+                "account as having no MQTT devices. Devices with a Tuya record "
+                "will fall back to the Tuya transport (no map stream).",
+                response.status,
+            )
             return []
 
     async def get_cloud_device_list(self) -> list[dict[str, Any]]:
