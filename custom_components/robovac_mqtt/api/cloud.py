@@ -215,27 +215,13 @@ class EufyLogin:
             local_key = device.get("localKey") or ""
 
             if dev_id in reconstructed_ids:
-                if api_type == "novel":
-                    # Tuya mirrors this robot, but the DPS it carries are Anker
-                    # protobuf blobs: this is an MQTT device whose AIOT list
-                    # came back empty, not a Tuya-native one (contrast the S1
-                    # Pro in issue #131). Demoting it to 30s Tuya polling also
-                    # costs the biz/ stream that carries maps and rooms, so keep
-                    # it on MQTT push and lend it the snapshot and local key
-                    # from this record (issue #98).
-                    self._lend_tuya_record(
-                        dev_id,
-                        dps,
-                        api_type,
-                        local_key,
-                        device.get("ip") or "",
-                    )
-                    _LOGGER.debug(
-                        "Cloud device %s: keeping MQTT push (Tuya record carries "
-                        "protobuf DPS); lending its snapshot and local key",
-                        dev_id,
-                    )
-                    continue
+                # A reconstructed entry is NOT evidence of MQTT: the AIOT list
+                # (which IS the MQTT device list) came back empty for it. A
+                # Tuya record with a localKey is positive evidence of a working
+                # transport, so it wins. Protobuf DPS here mean only that the
+                # payloads are Anker-encoded, not that the robot is reachable
+                # on Anker's broker — subscribing to a topic nobody publishes
+                # to fails silently and the entity never updates.
                 superseded_ids.add(dev_id)
                 _LOGGER.debug(
                     "Cloud device %s: superseding reconstructed MQTT placeholder "
@@ -294,38 +280,15 @@ class EufyLogin:
             ]
             keyed_cloud = [d for d in self.cloud_devices if d.get("local_key")]
             if len(leftover) == 1 and len(keyed_cloud) == 1:
-                cloud = keyed_cloud[0]
-                if cloud["apiType"] == "novel":
-                    # Same robot, and its DPS are Anker protobuf — resolve the
-                    # duplicate the other way round: keep the MQTT entry (push,
-                    # plus the biz/ map+room stream) and fold the Tuya record
-                    # into it rather than the reverse (issue #98).
-                    self._lend_tuya_record(
-                        leftover[0]["deviceId"],
-                        cloud["dps"],
-                        cloud["apiType"],
-                        cloud["local_key"],
-                        cloud.get("tuya_public_ip", ""),
-                    )
-                    self.cloud_devices = [
-                        d for d in self.cloud_devices if d is not cloud
-                    ]
-                    _LOGGER.debug(
-                        "Kept MQTT device %s over Tuya cloud device %s "
-                        "(id mismatch, same robot, protobuf DPS)",
-                        leftover[0]["deviceId"],
-                        cloud["deviceId"],
-                    )
-                else:
-                    self.mqtt_devices = [
-                        d for d in self.mqtt_devices if d is not leftover[0]
-                    ]
-                    _LOGGER.debug(
-                        "Dropped lone reconstructed placeholder %s in favour of the "
-                        "single Tuya cloud device %s (id mismatch, same robot)",
-                        leftover[0]["deviceId"],
-                        cloud["deviceId"],
-                    )
+                self.mqtt_devices = [
+                    d for d in self.mqtt_devices if d is not leftover[0]
+                ]
+                _LOGGER.debug(
+                    "Dropped lone reconstructed placeholder %s in favour of the "
+                    "single Tuya cloud device %s (id mismatch, same robot)",
+                    leftover[0]["deviceId"],
+                    keyed_cloud[0]["deviceId"],
+                )
 
         if self.cloud_devices:
             _LOGGER.info(
@@ -483,31 +446,6 @@ class EufyLogin:
             if token in EUFY_CLEAN_DEVICES:
                 return token
         return ""
-
-    def _lend_tuya_record(
-        self,
-        dev_id: str,
-        dps: dict[str, Any],
-        api_type: str,
-        local_key: str,
-        public_ip: str,
-    ) -> None:
-        """Seed a reconstructed MQTT entry from its matching Tuya record.
-
-        The placeholder was built from the Eufy cloud list alone, so it has no
-        DPS snapshot and no protocol evidence. The Tuya record has both, plus
-        the local key that makes the optional LAN transport available. Promote
-        the entry out of placeholder status: it is now a confirmed MQTT device.
-        """
-        for entry in self.mqtt_devices:
-            if entry["deviceId"] != dev_id:
-                continue
-            entry["dps"] = dps
-            entry["apiType"] = api_type
-            entry["reconstructed"] = False
-            entry["local_key"] = local_key
-            entry["tuya_public_ip"] = public_ip
-            return
 
     def findModel(
         self,
