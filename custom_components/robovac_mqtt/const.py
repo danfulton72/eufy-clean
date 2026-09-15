@@ -130,10 +130,12 @@ EUFY_CLEAN_G_SERIES = [
     "T2270",
     "T2272",
     "T2273",
-    "T2277",
 ]
 
-EUFY_CLEAN_L_SERIES = ["T2190", "T2267", "T2268", "T2278"]
+# T2277/T2278 are the self-empty-station (SES) variants of the L60 and L60
+# Hybrid. T2277 was previously listed under the G series, which contradicted
+# its entry in EUFY_CLEAN_DEVICES ("Robovac L60 SES") — see issue #98.
+EUFY_CLEAN_L_SERIES = ["T2190", "T2267", "T2268", "T2277", "T2278"]
 
 EUFY_CLEAN_C_SERIES = [
     "T1250",
@@ -748,6 +750,21 @@ LEGACY_DPS_MAP = {
 
 # Reverse lookup: DPS number string -> key name
 LEGACY_DPS_MAP_BY_VALUE = {v: k for k, v in LEGACY_DPS_MAP.items()}
+
+# Every DPS key a parser recognises, keyed by api_type. Derived from the maps
+# above so the DPS numbers keep exactly one definition. Diagnostics subtracts
+# a device's raw_dps keys from this set to report which channels the device
+# sends that nothing here reads yet — the first thing needed when triaging a
+# new model (issue #98).
+KNOWN_DPS_KEYS: Final[dict[str, frozenset[str]]] = {
+    "novel": (
+        frozenset(DPS_MAP.values())
+        | KNOWN_UNPROCESSED_DPS
+        | frozenset({DPS_ROBOT_TELEMETRY})
+    ),
+    "scalar": frozenset(SCALAR_DPS.values()),
+    "legacy": frozenset(LEGACY_DPS_MAP.values()),
+}
 
 # Legacy work status string -> activity mapping
 LEGACY_WORK_STATUS_MAP = {

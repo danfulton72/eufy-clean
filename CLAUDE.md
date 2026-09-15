@@ -186,8 +186,8 @@ the registry. Any non-scalar api type (legacy/unknown) is treated as novel.
 ## Supported Device Series
 
 - **X-Series**: T2261, T2262, T2266, T2276, T2320, T2351 (X8, X8 Pro, X9 Pro, X10 Pro Omni)
-- **G-Series**: T2210-T2278 (G20, G30, G35, G40, G50, etc.)
-- **L-Series**: T2190, T2267, T2268, T2278 (L60, L70)
+- **G-Series**: T2210-T2273 (G20, G30, G35, G40, G50, etc.)
+- **L-Series**: T2190, T2267, T2268, T2277, T2278 (L60, L60 SES, L70)
 - **C-Series**: T1250, T2117, T2118, T2120, T2128, T2130, T2132, T2280, T2292 (legacy + C20)
 - **S-Series**: T2119, T2080 (RoboVac 11S, S1)
 

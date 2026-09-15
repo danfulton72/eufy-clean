@@ -8,7 +8,7 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from .const import DOMAIN, KNOWN_DPS_KEYS
 
 REDACT_KEYS = {
     "password",
@@ -22,6 +22,27 @@ REDACT_KEYS = {
     "sid",
     "openudid",
 }
+
+
+def _dps_coverage(api_type: str, raw_dps: dict[str, Any]) -> dict[str, Any]:
+    """Summarise which DPS channels a device sends and which are unread.
+
+    Model-support reports ("my L60 SES has no entities") are impossible to act
+    on without knowing what the device actually publishes. Keys are always
+    safe to include; values are only included for the unknown keys, where the
+    payload is the thing that has to be decoded, and are truncated so a map or
+    telemetry blob cannot bloat the report.
+    """
+    known = KNOWN_DPS_KEYS.get(api_type, KNOWN_DPS_KEYS["novel"])
+    seen = {str(key) for key in raw_dps}
+    unknown = sorted(seen - known)
+    return {
+        "seen_keys": sorted(seen),
+        "unknown_keys": unknown,
+        "unknown_samples": {
+            key: str(raw_dps[key])[:120] for key in unknown
+        },
+    }
 
 
 async def async_get_config_entry_diagnostics(
@@ -45,6 +66,13 @@ async def async_get_config_entry_diagnostics(
                 "last_update_success": coordinator.last_update_success,
                 "update_interval": str(coordinator.update_interval),
                 "consecutive_cloud_failures": coordinator._consecutive_cloud_failures,
+                # Which state fields the device has ever populated. An empty or
+                # near-empty set is what "device detected, but no entities"
+                # looks like from the inside.
+                "received_fields": sorted(coordinator.data.received_fields),
+                "dps": _dps_coverage(
+                    coordinator.api_type, coordinator.data.raw_dps
+                ),
             }
         )
 
