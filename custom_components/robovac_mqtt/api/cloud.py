@@ -213,6 +213,18 @@ class EufyLogin:
             dps = self._coerce_dps(device.get("dps"))
             api_type = self.checkApiType(dps)
             local_key = device.get("localKey") or ""
+            if not local_key:
+                # No localKey means the LAN transport is unavailable and the
+                # per-device host/version options stay hidden, which is
+                # otherwise indistinguishable from a broken options flow. Log
+                # the field NAMES the record carries (never the values) so the
+                # key can be spotted under a different name if Tuya renamed it.
+                _LOGGER.info(
+                    "Tuya record %s carries no localKey; local transport "
+                    "unavailable. Fields present: %s",
+                    dev_id,
+                    sorted(device),
+                )
 
             if dev_id in reconstructed_ids:
                 # A reconstructed entry is NOT evidence of MQTT: the AIOT list
