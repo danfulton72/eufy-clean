@@ -70,6 +70,10 @@ async def async_get_config_entry_diagnostics(
                 # near-empty set is what "device detected, but no entities"
                 # looks like from the inside.
                 "received_fields": sorted(coordinator.data.received_fields),
+                # Whether the LAN transport is even offered. The per-device
+                # host/version options are hidden when this is False, so a
+                # missing form field and a missing localKey look the same.
+                "has_local_key": bool(getattr(coordinator, "_local_key", None)),
                 "dps": _dps_coverage(
                     coordinator.api_type, coordinator.data.raw_dps
                 ),
