@@ -137,7 +137,7 @@ class EufyLogin:
         devices = [
             {
                 **self.findModel(device.get("device_sn", ""), aiot_device=device),
-                "apiType": self.checkApiType(device.get("dps", {})),
+                "apiType": self._mqtt_api_type(device.get("dps", {})),
                 "mqtt": True,
                 "dps": device.get("dps", {}),
                 "softVersion": device.get("main_sw_version")
@@ -210,7 +210,32 @@ class EufyLogin:
                     dev_id,
                 )
                 continue
+            dps = self._coerce_dps(device.get("dps"))
+            api_type = self.checkApiType(dps)
+            local_key = device.get("localKey") or ""
+
             if dev_id in reconstructed_ids:
+                if api_type == "novel":
+                    # Tuya mirrors this robot, but the DPS it carries are Anker
+                    # protobuf blobs: this is an MQTT device whose AIOT list
+                    # came back empty, not a Tuya-native one (contrast the S1
+                    # Pro in issue #131). Demoting it to 30s Tuya polling also
+                    # costs the biz/ stream that carries maps and rooms, so keep
+                    # it on MQTT push and lend it the snapshot and local key
+                    # from this record (issue #98).
+                    self._lend_tuya_record(
+                        dev_id,
+                        dps,
+                        api_type,
+                        local_key,
+                        device.get("ip") or "",
+                    )
+                    _LOGGER.debug(
+                        "Cloud device %s: keeping MQTT push (Tuya record carries "
+                        "protobuf DPS); lending its snapshot and local key",
+                        dev_id,
+                    )
+                    continue
                 superseded_ids.add(dev_id)
                 _LOGGER.debug(
                     "Cloud device %s: superseding reconstructed MQTT placeholder "
@@ -234,12 +259,10 @@ class EufyLogin:
                     device.get("name"),
                 )
 
-            dps = self._coerce_dps(device.get("dps"))
-            local_key = device.get("localKey") or ""
             self.cloud_devices.append(
                 {
                     **model_info,
-                    "apiType": self.checkApiType(dps),
+                    "apiType": api_type,
                     "mqtt": False,
                     "dps": dps,
                     "softVersion": "",
@@ -271,15 +294,38 @@ class EufyLogin:
             ]
             keyed_cloud = [d for d in self.cloud_devices if d.get("local_key")]
             if len(leftover) == 1 and len(keyed_cloud) == 1:
-                self.mqtt_devices = [
-                    d for d in self.mqtt_devices if d is not leftover[0]
-                ]
-                _LOGGER.debug(
-                    "Dropped lone reconstructed placeholder %s in favour of the "
-                    "single Tuya cloud device %s (id mismatch, same robot)",
-                    leftover[0]["deviceId"],
-                    keyed_cloud[0]["deviceId"],
-                )
+                cloud = keyed_cloud[0]
+                if cloud["apiType"] == "novel":
+                    # Same robot, and its DPS are Anker protobuf — resolve the
+                    # duplicate the other way round: keep the MQTT entry (push,
+                    # plus the biz/ map+room stream) and fold the Tuya record
+                    # into it rather than the reverse (issue #98).
+                    self._lend_tuya_record(
+                        leftover[0]["deviceId"],
+                        cloud["dps"],
+                        cloud["apiType"],
+                        cloud["local_key"],
+                        cloud.get("tuya_public_ip", ""),
+                    )
+                    self.cloud_devices = [
+                        d for d in self.cloud_devices if d is not cloud
+                    ]
+                    _LOGGER.debug(
+                        "Kept MQTT device %s over Tuya cloud device %s "
+                        "(id mismatch, same robot, protobuf DPS)",
+                        leftover[0]["deviceId"],
+                        cloud["deviceId"],
+                    )
+                else:
+                    self.mqtt_devices = [
+                        d for d in self.mqtt_devices if d is not leftover[0]
+                    ]
+                    _LOGGER.debug(
+                        "Dropped lone reconstructed placeholder %s in favour of the "
+                        "single Tuya cloud device %s (id mismatch, same robot)",
+                        leftover[0]["deviceId"],
+                        cloud["deviceId"],
+                    )
 
         if self.cloud_devices:
             _LOGGER.info(
@@ -387,6 +433,22 @@ class EufyLogin:
             return "novel"
         return "legacy"
 
+    @classmethod
+    def _mqtt_api_type(cls, dps: dict) -> str:
+        """Classify a device reached over the Anker MQTT transport.
+
+        "legacy" means plain-value DPS carried by the Tuya Cloud transport, so
+        it can never describe an MQTT device. checkApiType returns it for an
+        EMPTY snapshot too (no evidence either way), which is what a
+        reconstructed placeholder carries when the AIOT device list came back
+        empty. Handing a protobuf device to the legacy parser means none of its
+        DPS keys are read and no entity ever populates, so default an
+        evidence-free MQTT device to novel — the protocol the transport exists
+        to carry (issue #98).
+        """
+        api_type = cls.checkApiType(dps)
+        return "novel" if api_type == "legacy" else api_type
+
     @staticmethod
     def _resolve_model(code: str) -> str:
         """Return the best device model code, falling back to first 5 chars."""
@@ -421,6 +483,31 @@ class EufyLogin:
             if token in EUFY_CLEAN_DEVICES:
                 return token
         return ""
+
+    def _lend_tuya_record(
+        self,
+        dev_id: str,
+        dps: dict[str, Any],
+        api_type: str,
+        local_key: str,
+        public_ip: str,
+    ) -> None:
+        """Seed a reconstructed MQTT entry from its matching Tuya record.
+
+        The placeholder was built from the Eufy cloud list alone, so it has no
+        DPS snapshot and no protocol evidence. The Tuya record has both, plus
+        the local key that makes the optional LAN transport available. Promote
+        the entry out of placeholder status: it is now a confirmed MQTT device.
+        """
+        for entry in self.mqtt_devices:
+            if entry["deviceId"] != dev_id:
+                continue
+            entry["dps"] = dps
+            entry["apiType"] = api_type
+            entry["reconstructed"] = False
+            entry["local_key"] = local_key
+            entry["tuya_public_ip"] = public_ip
+            return
 
     def findModel(
         self,
