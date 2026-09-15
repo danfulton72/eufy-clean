@@ -852,3 +852,126 @@ async def test_tuya_supersedes_placeholder_on_id_mismatch_single_robot():
     assert len(login.cloud_devices) == 1
     assert login.cloud_devices[0]["deviceId"] == "tuya_devid"
     assert login.cloud_devices[0]["local_key"] == "k"
+
+
+# ── Protobuf devices must not be demoted off MQTT (issue #98) ──
+
+
+@pytest.mark.asyncio
+async def test_reconstructed_placeholder_is_not_classified_legacy():
+    """A placeholder built from an empty AIOT list has no DPS to classify from.
+
+    Defaulting it to "legacy" hands the legacy parser a protobuf device, which
+    reads none of its DPS keys — the device appears but nothing populates.
+    """
+    login = _make_login()
+    login.eufyApi.get_cloud_device_list = AsyncMock(
+        return_value=[
+            {
+                "id": "l60_dev",
+                "product": {"product_code": "T2278", "name": "L60 Hybrid SES"},
+                "alias_name": "eufy Clean L60 Hybrid SES",
+                "device_model": "T2278",
+            }
+        ]
+    )
+    login.eufyApi.get_device_list = AsyncMock(return_value=[])  # AIOT empty
+
+    await login.getDevices()
+
+    assert login.mqtt_devices[0]["reconstructed"] is True
+    assert login.mqtt_devices[0]["apiType"] == "novel"
+
+
+def test_mqtt_api_type_never_legacy():
+    """"legacy" describes the Tuya transport, so it can't apply over MQTT."""
+    # Empty snapshot: no evidence -> novel, the protocol MQTT carries.
+    assert EufyLogin._mqtt_api_type({}) == "novel"
+    assert EufyLogin._mqtt_api_type({"999": "value"}) == "novel"
+    # Positive evidence is still honoured.
+    assert EufyLogin._mqtt_api_type({"153": "CgYIBRABGAU="}) == "novel"
+    assert EufyLogin._mqtt_api_type({"15": 5}) == "scalar"
+
+
+async def _login_with_empty_aiot(model: str = "T2278") -> EufyLogin:
+    """An account whose AIOT list is empty -> one reconstructed placeholder."""
+    login = _make_login()
+    login.eufyApi.get_cloud_device_list = AsyncMock(
+        return_value=[
+            {
+                "id": "l60_dev",
+                "product": {"product_code": model, "name": "L60 Hybrid SES"},
+                "alias_name": "eufy Clean L60 Hybrid SES",
+                "device_model": model,
+            }
+        ]
+    )
+    login.eufyApi.get_device_list = AsyncMock(return_value=[])
+    await login.getDevices()
+    return login
+
+
+@pytest.mark.asyncio
+async def test_protobuf_tuya_record_keeps_mqtt_path():
+    """A Tuya record carrying protobuf DPS describes an MQTT device.
+
+    It must not supersede the placeholder onto 30s Tuya polling — that also
+    costs the biz/ stream carrying maps and rooms.
+    """
+    login = await _login_with_empty_aiot()
+
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_list = AsyncMock(
+        return_value=[
+            {
+                "devId": "l60_dev",
+                "localKey": "secret",
+                "ip": "203.0.113.7",
+                "name": "eufy Clean L60 Hybrid SES",
+                "dps": {"153": "CgYIBRABGAU=", "163": 46},
+            }
+        ]
+    )
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    assert not login.cloud_devices
+    assert len(login.mqtt_devices) == 1
+    dev = login.mqtt_devices[0]
+    assert dev["mqtt"] is True
+    assert dev["apiType"] == "novel"
+    # Promoted out of placeholder status, and seeded from the Tuya record.
+    assert dev["reconstructed"] is False
+    assert dev["dps"] == {"153": "CgYIBRABGAU=", "163": 46}
+    assert dev["local_key"] == "secret"
+    assert dev["tuya_public_ip"] == "203.0.113.7"
+
+
+@pytest.mark.asyncio
+async def test_protobuf_tuya_record_keeps_mqtt_path_on_id_mismatch():
+    """Same robot, different ids: the duplicate resolves in MQTT's favour."""
+    login = await _login_with_empty_aiot()
+
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_list = AsyncMock(
+        return_value=[
+            {
+                "devId": "tuya_devid",
+                "localKey": "secret",
+                "name": "eufy Clean L60 Hybrid SES",
+                "dps": {"153": "CgYIBRABGAU="},
+            }
+        ]
+    )
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    assert not login.cloud_devices
+    assert len(login.mqtt_devices) == 1
+    dev = login.mqtt_devices[0]
+    # The MQTT entry keeps the Eufy device id (the MQTT topic depends on it).
+    assert dev["deviceId"] == "l60_dev"
+    assert dev["apiType"] == "novel"
+    assert dev["local_key"] == "secret"
